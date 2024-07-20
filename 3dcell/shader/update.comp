@@ -1,0 +1,27 @@
+#version 450
+
+#define CELL_CONTAINER_LENGTH 32
+
+layout (push_constant) uniform push_constant
+{
+        uint cell_image_swap;
+};
+
+layout (binding = 0, r8) uniform image3D cell_image;
+
+void main()
+{        
+
+        vec3 read_cell_pos, write_cell_pos;
+        if (cell_image_swap)
+        {
+                read_cell_pos = gl_LocalInvocationId.xyz;
+                write_cell_pos = gl_LocalInvocationId.xyz + CELL_CONTAINER_LENGTH;
+        } else 
+        {
+                read_cell_pos = gl_LocalInvocationId.xyz + CELL_CONTAINER_LENGTH;
+                write_cell_pos = gl_LocalInvocationId.xyz;
+        }
+
+        uvec4 read_cell_state = texture3D(cell_image, read_cell_pos, 0.0);
+}       
