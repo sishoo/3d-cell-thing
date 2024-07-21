@@ -31,13 +31,13 @@ typedef struct
         VkQueue queue;
         VkCommandPool command_pool;
 
-
         VkImageView cell_image_view;
         VkImage cell_image;
+        VkDescriptorSet cell_image_descriptor_set;
+        VkSampler cell_image_sampler;
 
-
-        VkBuffer cell_buffer;
-        VkDescriptorSet cell_buffer_descriptor_set;
+        VkBuffer draw_buffer;
+        VkDescriptorSet draw_buffer_descriptor_set;
 
         /* Core pipelines */
         VkPipeline cell_draw_pipeline, cell_update_pipeline;
@@ -47,8 +47,6 @@ typedef struct
         /* Auxillary frame data */
         uint32_t previous_resource_index;
         frame_render_infos_t *frame_render_infos;
-
-
 
         int window_width, window_height;
         GLFWwindow *window;

@@ -250,6 +250,17 @@ void cell_renderer_init_cell_image(cell_renderer_t *const r)
         VK_TRY(vkBindImageMemory(r->ldevice, r->cell_image, r->cell_image_memory, 0));
 }
 
+void cell_renderer_init_draw_buffer(cell_renderer_t *const r)
+{
+
+
+        VkBufferCreateInfo create_info = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = CELL_CONTAINER_LENGTH * CELL_CONTAINER_LENGTH * CELL_CONTAINER_LENGTH + sizeof(uint32_t),
+
+        };      
+}
+
 void cell_renderer_init_cell_image_sampler(cell_renderer_t *const r)
 {
         VkSamplerCreateInfo create_info = {
@@ -339,7 +350,8 @@ void cell_renderer_init_graphics_pipeline(cell_renderer_t *const r)
         };
 
         /* Grahpics pipeline create info */
-        VkPipelineShaderStageCreateInfo *shader_stage_create_infos = (VkPipelineShaderStageCreateInfo *)HALLOC(2 * sizeof(VkPipelineShaderStageCreateInfo));
+        VkPipelineShaderStageCreateInfo *shader_stage_create_infos = (VkPipelineShaderStageCreateInfo *)calloc(2 * sizeof(VkPipelineShaderStageCreateInfo));
+        
         /* Vertex shader*/
         shader_stage_create_infos[0] = {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -585,6 +597,39 @@ void cell_renderer_render(cell_renderer_t *const r)
         }
 }
 
+void cell_renderer_bind_persistant_descriptor_sets(cell_renderer_t *const r)
+{
+        /* Pepare the command buffer for recording */
+        VkCommandBufferBeginInfo command_buffer_begin_info = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+        };
+
+        frame_infos_t *frame_infos = r->frame_render_infos;
+
+        VK_TRY(vkResetCommandBuffer(frame_infos->command_buffer, 0));
+        VK_TRY(vkBeginCommandBuffer(frame_infos->command_buffer, &command_buffer_begin_info));
+        
+        /* Cell updates */
+        vkCmdBindDescriptorSets(frame_infos->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, r->cell_update_pipeline_layout, 0, 3, r->cell_buffer_descriptor_set, 0, NULL);
+  
+        VK_TRY(vkEndCommandBuffer(frame_infos->command_buffer));
+
+        /* Submit the main command buffer */
+        VkCommandBufferSubmitInfoKHR command_buffer_submit_info = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                .commandBuffer = frame_infos->command_buffer
+        };
+
+        VkSubmitInfo2 submit_info = {
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                .commandBufferInfoCount = 1,
+                .pCommandBufferInfos = &command_buffer_submit_info,
+        };
+
+        VK_TRY(vkQueueSubmit2(r->queue, 1, &submit_info, frame_infos->finished_fence));
+}
+
 void cell_renderer_render_frame(cell_renderer_t *const r)
 {
         uint32_t resource_index = r->previous_resource_index;
@@ -613,19 +658,9 @@ void cell_renderer_render_frame(cell_renderer_t *const r)
         VK_TRY(vkResetCommandBuffer(frame_infos->command_buffer, 0));
         VK_TRY(vkBeginCommandBuffer(frame_infos->command_buffer, &command_buffer_begin_info));
 
-        
         /* Cell updates */
         vkCmdBindPipeline(frame_infos->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, r->cell_update_pipeline);
-
-
-        vkCmdBindDescriptorSets(frame_infos->command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, r->cell_update_pipeline_layout, 0, 3, r->cell_buffer_descriptor_set, 0, NULL);
-
-
         vkCmdDispatch(frame_infos->command_buffer, ceil( / 16), 1, 1);
-
-
-
-
 
         VkBufferMemoryBarrier2 draw_buffer_memory_barrier = {
                 .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -637,10 +672,6 @@ void cell_renderer_render_frame(cell_renderer_t *const r)
                 .offset = 0,
                 .size = VK_WHOLE_SIZE
         };
-
-
-
-
 
         /* Translate target image: UNDEFINED -> COLOR_ATTACHMENT */
         VkImageSubresourceRange target_image_subresource_range = {
@@ -663,7 +694,7 @@ void cell_renderer_render_frame(cell_renderer_t *const r)
                 .subresourceRange = target_image_subresource_range
         };
 
-        /* Barrier for image transition UNDEFINED -> COLOR_ATTACHMENT and compute culler */
+        /* Barrier for image transition UNDEFINED -> COLOR_ATTACHMENT and cell_update */
         VkDependencyInfo barriers_dependency_info = {
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                 .bufferMemoryBarrierCount = 1,
@@ -789,188 +820,6 @@ void cell_renderer_render_frame(cell_renderer_t *const r)
 
         VK_TRY(vkQueuePresentKHR(r->queue, &present_info));
 
-#ifdef USE_THIS_LATER_BRUH
-        heph_scene_t *scene = r->current_scene;
-        heph_camera_t *camera = r->current_camera;
-
-        uint32_t resource_index = (r->resource_index + 1) * !(r->resource_index + 1 == r->swapchain_nimages);
-
-        VkFence render_complete_fence = r->frame_render_infos[resource_index].render_complete_fence;
-        VkSemaphore render_complete_semaphore = r->frame_render_infos[resource_index].render_complete_semaphore;
-        VkCommandBuffer frame_command_buffer = r->frame_render_infos[resource_index].command_buffer;
-
-        /* Make sure the fence we are going to use is not in use */
-        HEPH_ASSERT(vkWaitForFences(r->ldevice, 1, &r->frame_render_infos[resource_index].render_complete_fence, VK_TRUE, cell_renderer_MAX_TIMEOUT), VK_SUCCESS);
-        HEPH_ASSERT(vkResetFences(r->ldevice, 1, &r->frame_render_infos[resource_index].render_complete_fence), VK_SUCCESS);
-
-        uint32_t image_index;
-        HEPH_ASSERT(vkAcquireNextImageKHR(r->ldevice, r->swapchain, cell_renderer_MAX_TIMEOUT, r->image_acquired_semaphore, NULL, &image_index), VK_SUCCESS);
-        VkImage target_image = r->swapchain_images[image_index];
-
-        /* Pepare the frame command buffer for recording */
-        VkCommandBufferBeginInfo command_buffer_begin_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-
-        vkResetCommandBuffer(command_buffer, 0);
-        vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
-
-        /* Get ready to compute cull */
-        /* Dispatch culling compute shader */
-        vkCmdBindPipeline(frame_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, r->compute_pipeline);
-
-        /* PushConstant the frustum and object buffer swap boolean */
-        camera->__push_constant_padding = scene->object_buffer_swap;
-        vkCmdPushConstants(
-            frame_command_buffer,
-            r->compute_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(heph_camera_t),
-            &r->current_camera->__push_constant_padding);
-
-        vkCmdBindDescriptorSets(frame_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, r->compute_pipeline_layout, 0, 3, &r->geometry_buffer_descriptor, 0, NULL);
-        vkCmdDispatch(frame_command_buffer, ceil(nobjects / 16), 1, 1);
-
-        /* Sync access to draw buffer */
-        VkBufferMemoryBarrier2 draw_buffer_memory_barrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-            .srcAccessMask =,
-            .dstAccessMask =,
-            .srcQueueFamilyIndex =,
-            .dstQueueFamilyIndex =,
-            .buffer = r->draw_buffer,
-            .offset = 0,
-            .size = r->nobjects};
-
-        /* Translate target image: UNDEFINED -> COLOR_ATTACHMENT */
-        VkImageSubresourceRange target_image_subresource_range = {
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
-
-        VkImageMemoryBarrier2 target_image_memory_barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_NONE, // None is sufficient, aquiring the image is synced
-            .dstStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .image = target_image,
-            .subresourceRange = target_image_subresource_range};
-
-        /* Barrier for image transition UNDEFINED -> COLOR_ATTACHMENT and compute culler */
-        VkDependencyInfo barriers_dependency_info = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .bufferMemoryBarrierCount = 1,
-            .pBufferMemoryBarriers = &draw_buffer_memory_barrier,
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &target_image_memory_barrier};
-
-        vkCmdPipelineBarrier2(frame_command_buffer, &barriers_dependency_info);
-
-        /* Bind required 'graphics' resources */
-        vkCmdBindVertexBuffers(frame_command_buffer, 0, 1, scene->geometry_buffer(uint32_t[]){0});
-        vkCmdBindIndexBuffer(frame_command_buffer, scene->geometry_buffer, scene->vertices_size_bytes, VK_INDEX_TYPE_UINT32);
-        vkCmdBindPipeline(frame_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, r->graphics_pipeline);
-
-        /* Gather required textures */
-
-        for (uint32_t i = 0; i < scene->nobjects; i++)
-        {
-                heph_object_t object = scene->objects[i];
-                if (object.is_visible)
-                {
-                        /* Send the texture */
-                        scene->mapped_object_buffer[i].
-                }
-        }
-
-        /* Get ready to draw */
-
-        /* PushConstant the view / projection matrices */
-        // TODO this doesnt feel right...
-        float vertex_shader_push_constant_data[32] = {};
-        memcpy(vertex_shader_push_constant_data, r->camera.view_matrix, sizeof(float) * 16);
-        memcpy(&vertex_shader_push_constant_data[16], r->projection_matrix, sizeof(float) * 16);
-        vkCmdPushConstants(
-            frame_command_buffer,
-            r->graphics_pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT,
-            0,
-            sizeof(float) * 32,
-            (void *)vertex_shader_push_constant_data);
-
-        vkCmdDrawIndexedIndirect(frame_command_buffer, draw_buffer, 0, draw_buffer_nids, sizeof(VkDrawIndexedIndirectCommand));
-
-        /* Translate target image: COLOR_ATTACHMENT -> PRESENTABLE */
-        VkImageMemoryBarrier2 target_image_memory_barrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_NONE, // None is sufficient, acquiring the image is synced
-            .dstStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .image = target_image,
-            .subresourceRange = target_image_subresource_range};
-
-        /* Barrier for image transition COLOR_ATTACHMENT -> PRESENTABLE */
-        // TODO bad name
-        VkDependencyInfo presentation_dependency_info = {
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .imageMemoryBarrierCount = 1,
-            .pImageMemoryBarriers = &target_image_memory_barrier};
-
-        vkCmdPipelineBarrier2(frame_command_buffer, &presentation_dependency_info);
-
-        vkEndCommandBuffer(frame_command_buffer);
-
-        /* Submit the main command buffer */
-        VkCommandBufferSubmitInfoKHR main_command_buffer_submit_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-            .commandBuffer = command_buffer};
-
-        VkSemaphoreSubmitInfo frame_render_complete_semaphore_submit_info = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = render_complete_semaphore,
-        };
-
-        VkSemaphoreSubmitInfo submit_info_wait_semaphores_infos[2];
-        submit_info_wait_semaphores_infos[0] = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = r->image_acquired_semaphore};
-        submit_info_wait_semaphores_infos[1] = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = r->frame_render_infos[r->prev_resource_index].render_complete_semaphore};
-
-        VkSubmitInfo2 submit_info = {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-            .commandBufferInfoCount = 1,
-            .pCommandBufferInfos = &main_command_buffer_submit_info,
-            .signalSemaphoreInfoCount = 1,
-            .pSignalSemaphoreInfos = &frame_render_complete_semaphore_submit_info,
-            .waitSemaphoreInfoCount = (uint32_t)2 - (r->prev_resource_index == UINT32_MAX),
-            .pWaitSemaphoreInfos = submit_info_wait_semaphores_infos};
-
-        HEPH_ASSERT(vkQueueSubmit2(r->queue, 1, &submit_info, r->frame_render_infos[resource_index].render_complete_fence), VK_SUCCESS);
-
-        /* Present the frame to the screen */
-        VkPresentInfoKHR present_info = {
-            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .swapchainCount = 1,
-            .pSwapchains = &r->swapchain,
-            .waitSemaphoreCount = 1,
-            .pImageIndices = &image_index,
-            .pWaitSemaphores = &render_complete_semaphore,
-        };
-
-        HEPH_ASSERT(vkQueuePresentKHR(r->queue, &present_info), VK_SUCCESS);
-#endif
-
         r->previous_resource_index = resource_index;
 }
 
@@ -993,7 +842,8 @@ void cell_renderer_init(cell_renderer_t *const r, char *const window_name, int w
 
         /* Engine Specifics */
         cell_renderer_init_cell_image(r);
-        cell_renderer_populate_cell_buffer(r);
+        cell_renderer_init_draw_buffer(r);
+        cell_renderer_populate_cell_image(r);
         cell_renderer_init_frame_render_infos(r);
         cell_renderer_init_sync_structures(r);
         cell_renderer_init_cell_draw_pipeline(r);

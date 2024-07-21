@@ -8,20 +8,34 @@ layout (push_constant) uniform push_constant
 };
 
 layout (binding = 0, r8) uniform image3D cell_image;
+layout (binding = 1) uniform sampler3D cell_sampler;
+
+layout (binding = 2) uniform writeonly draw_buffer
+{
+        atomic_uint draw_count;
+        mat3 model_matrices[];
+};
 
 void main()
 {        
-
         vec3 read_cell_pos, write_cell_pos;
         if (cell_image_swap)
         {
                 read_cell_pos = gl_LocalInvocationId.xyz;
                 write_cell_pos = gl_LocalInvocationId.xyz + CELL_CONTAINER_LENGTH;
-        } else 
+        } 
+        else 
         {
                 read_cell_pos = gl_LocalInvocationId.xyz + CELL_CONTAINER_LENGTH;
                 write_cell_pos = gl_LocalInvocationId.xyz;
         }
 
         uvec4 read_cell_state = texture3D(cell_image, read_cell_pos, 0.0);
+
+        /* if cell is alive */
+        if (0.5 <= read_cell_state)
+        {       
+                model_matrices[atomicCounterIncrement(draw_count)] = uvec4(0, 0, 0, 0);
+                textureStore(cell_image, write_cell_pos, uvec4(255, 255, 255, 255));
+        }
 }       
